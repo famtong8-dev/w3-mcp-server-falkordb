@@ -3,6 +3,7 @@
 
 import json
 import os
+import sys
 import asyncio
 from enum import Enum
 from typing import Optional, Any, Dict, List
@@ -21,7 +22,6 @@ except ImportError:
 # Configuration from environment variables
 FALKORDB_URL = os.environ.get("FALKORDB_URL", "redis://localhost:6379")
 FALKORDB_PASSWORD = os.environ.get("FALKORDB_PASSWORD", "")
-FALKORDB_GRAPH = os.environ.get("FALKORDB_GRAPH", "default")
 
 
 def parse_redis_url(url: str) -> tuple:
@@ -132,14 +132,14 @@ async def execute_query(graph: str, query: str, params: Optional[Dict[str, Any]]
 async def app_lifespan(app):
     """Manage FalkorDB connection lifecycle."""
     if not REDIS_AVAILABLE:
-        print("⚠ Warning: redis package not installed. Install with: pip install redis")
+        print("⚠ Warning: redis package not installed. Install with: pip install redis", file=sys.stderr)
         yield {}
         return
 
     # Test connection
     try:
         host, port, password = parse_redis_url(FALKORDB_URL)
-        print(f"🔗 Testing FalkorDB connection at {host}:{port}...")
+        print(f"🔗 Testing FalkorDB connection at {host}:{port}...", file=sys.stderr)
 
         if password:
             redis_url = f"redis://:{password}@{host}:{port}"
@@ -155,16 +155,13 @@ async def app_lifespan(app):
         try:
             # Test ping
             pong = await client.ping()
-            print(f"✓ FalkorDB is responding (ping: {pong})")
-
-            # Try a simple query
-            result = await client.execute_command("GRAPH.QUERY", FALKORDB_GRAPH, "RETURN 1 AS test")
-            print(f"✓ FalkorDB GRAPH.QUERY is working")
+            print(f"✓ FalkorDB is responding (ping: {pong})", file=sys.stderr)
+            print(f"✓ FalkorDB connection is ready for queries", file=sys.stderr)
         finally:
-            await client.close()
+            await client.aclose()
 
     except Exception as e:
-        print(f"⚠ Warning: Could not verify FalkorDB connection: {e}")
+        print(f"⚠ Warning: Could not verify FalkorDB connection: {e}", file=sys.stderr)
 
     yield {}
 
@@ -190,8 +187,8 @@ class QueryInput(BaseModel):
         max_length=10000,
     )
     graph: str = Field(
-        default=FALKORDB_GRAPH,
-        description="Graph name to query",
+        ...,
+        description="Graph name to query (required)",
         min_length=1,
         max_length=255,
     )
@@ -234,8 +231,8 @@ class GetNodesInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     graph: str = Field(
-        default=FALKORDB_GRAPH,
-        description="Graph name to query",
+        ...,
+        description="Graph name to query (required)",
         min_length=1,
         max_length=255,
     )
@@ -282,9 +279,9 @@ async def falkordb_query(params: QueryInput, ctx: Context) -> str:
     Args:
         params (QueryInput): Validated parameters:
             - query (str): Cypher query to execute
-            - graph (str): Graph name (default: from FALKORDB_GRAPH env)
+            - graph (str): Graph name (required)
             - params (dict): Query parameters/variables
-            - response_format (str): 'markdown' or 'json'
+            - response_format (str): 'json', 'markdown', or 'raw'
 
     Returns:
         str: Formatted query results
@@ -400,10 +397,10 @@ async def falkordb_get_nodes(params: GetNodesInput, ctx: Context) -> str:
 
     Args:
         params (GetNodesInput): Validated parameters:
-            - graph (str): Graph name
+            - graph (str): Graph name (required)
             - label (str): Optional node label filter
             - limit (int): Max nodes to return (1-1000, default: 10)
-            - response_format (str): 'markdown' or 'json'
+            - response_format (str): 'json' or 'markdown'
 
     Returns:
         str: Formatted list of nodes with metadata
@@ -503,43 +500,93 @@ async def falkordb_list_graphs(params: ListGraphsInput, ctx: Context) -> str:
         - Connection error: "Cannot connect to FalkorDB"
     """
     try:
-        await ctx.info("Fetching graphs from FalkorDB...")
+        await ctx.info("Fetching available graphs from FalkorDB...")
 
-        # Try to get graph statistics
-        graph_info = {
-            "default_graph": FALKORDB_GRAPH,
-            "url": FALKORDB_URL,
-            "status": "connected"
-        }
+        if not REDIS_AVAILABLE:
+            raise ValueError("redis package not installed")
 
-        # Attempt to get graph statistics (if available)
-        try:
-            stat_result = await execute_query(FALKORDB_GRAPH, "CALL db.stats() YIELD * RETURN *")
-            if stat_result.get("success") and stat_result.get("data"):
-                graph_info["statistics"] = stat_result["data"]
-        except:
-            # Graph stats not available, continue anyway
-            pass
+        host, port, password = parse_redis_url(FALKORDB_URL)
 
-        if params.response_format == ResponseFormat.JSON:
-            return json.dumps(graph_info, indent=2, default=str)
+        if password:
+            redis_url = f"redis://:{password}@{host}:{port}"
         else:
-            markdown = "## FalkorDB Graphs\n\n"
-            markdown += f"📊 Default Graph: `{FALKORDB_GRAPH}`\n"
-            markdown += f"🔗 Server: `{FALKORDB_URL}`\n"
-            markdown += f"✓ Status: Connected\n"
+            redis_url = f"redis://{host}:{port}"
 
-            if "statistics" in graph_info:
-                markdown += f"\n### Graph Statistics\n"
-                markdown += f"```json\n{json.dumps(graph_info['statistics'], indent=2, default=str)}\n```\n"
+        client = await redis.from_url(
+            redis_url,
+            decode_responses=True,
+            socket_connect_timeout=10,
+        )
 
-            return markdown
+        try:
+            # Try to list graphs using SCAN command to find graph keys
+            # FalkorDB stores graphs as Redis keys
+            graphs = []
+            cursor = 0
+            pattern = "*"
+
+            # Use SCAN to iterate through keys
+            while True:
+                cursor, keys = await client.scan(cursor=cursor, match=pattern, count=100)
+
+                # Filter keys that look like graph keys (exclude internal Redis keys)
+                for key in keys:
+                    if not key.startswith("_"):  # Exclude internal keys
+                        graphs.append(key)
+
+                if cursor == 0:
+                    break
+
+            # Try to get stats for each graph
+            graph_details = []
+            for graph_name in graphs[:50]:  # Limit to first 50 to avoid too much output
+                try:
+                    result = await client.execute_command("GRAPH.QUERY", graph_name, "RETURN 1 AS test")
+                    graph_details.append({
+                        "name": graph_name,
+                        "status": "accessible"
+                    })
+                except:
+                    # Graph key exists but might not be a valid graph
+                    graph_details.append({
+                        "name": graph_name,
+                        "status": "inaccessible"
+                    })
+
+            graph_info = {
+                "url": FALKORDB_URL,
+                "status": "connected",
+                "graphs": graph_details,
+                "total_count": len(graphs)
+            }
+
+            if params.response_format == ResponseFormat.JSON:
+                return json.dumps(graph_info, indent=2, default=str)
+            else:
+                markdown = "## FalkorDB Graphs\n\n"
+                markdown += f"🔗 Server: `{FALKORDB_URL}`\n"
+                markdown += f"✓ Status: Connected\n"
+                markdown += f"📊 Total Graphs: {len(graph_details)}\n\n"
+
+                if graph_details:
+                    markdown += "### Available Graphs\n\n"
+                    for i, graph in enumerate(graph_details, 1):
+                        status_icon = "✓" if graph["status"] == "accessible" else "⚠"
+                        markdown += f"{i}. **{graph['name']}** - {status_icon} {graph['status']}\n"
+                else:
+                    markdown += "ℹ️ No graphs found in FalkorDB.\n"
+
+                return markdown
+
+        finally:
+            await client.aclose()
 
     except Exception as e:
         await ctx.error(f"Failed to list graphs: {type(e).__name__}: {e}")
         return json.dumps({
             "error": "Failed to list graphs",
-            "message": str(e)
+            "message": str(e),
+            "type": type(e).__name__
         })
 
 
@@ -549,6 +596,11 @@ def main():
         mcp.run()
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
+    except Exception as e:
+        print(f"Error: {type(e).__name__}: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

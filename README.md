@@ -1,16 +1,16 @@
 # W3 MCP FalkorDB Server
 
-Python MCP server for graph database operations using [FalkorDB](https://www.falkordb.com/) - a high-performance graph database.
+MCP server for graph database operations using [FalkorDB](https://www.falkordb.com/) - a high-performance graph database via Redis protocol.
 
-**Status:** ✅ Ready for integration with FalkorDB
+**Status:** ✅ Production Ready
 
 ## Features
 
-- **falkordb_query** - Execute Cypher queries against FalkorDB graphs
-- **falkordb_get_nodes** - Retrieve and filter nodes from graphs
-- **falkordb_list_graphs** - List available graphs and database information
+- **falkordb_query** - Execute parameterized Cypher queries with JSON/Markdown/RAW output formats
+- **falkordb_get_nodes** - Retrieve and filter nodes by label with configurable limits
+- **falkordb_list_graphs** - List all available graphs and their accessibility status
 
-Supports flexible output formats (Markdown or JSON) with parameterized queries for safety.
+All tools support multiple output formats (JSON, Markdown, RAW) for flexible integration with different clients.
 
 ## Quick Start
 
@@ -46,7 +46,7 @@ unset VIRTUAL_ENV
 # Install Python dependencies (using uv)
 uv sync
 
-# Install MCP CLI dependencies
+# (Optional) Install MCP CLI for dev inspector
 uv pip install 'mcp[cli]'
 ```
 
@@ -55,16 +55,14 @@ uv pip install 'mcp[cli]'
 Create a `.env` file or export environment variables:
 
 ```bash
-# FalkorDB
-export FALKORDB_URL=http://localhost:6379
+# FalkorDB (supports redis://, http://, and https:// schemes)
+export FALKORDB_URL=redis://localhost:6379
 export FALKORDB_PASSWORD=  # Optional if using authentication
-export FALKORDB_GRAPH=default  # Default graph name
 
 # Or create .env file
 cat > .env << EOF
-FALKORDB_URL=http://localhost:6379
+FALKORDB_URL=redis://localhost:6379
 FALKORDB_PASSWORD=
-FALKORDB_GRAPH=default
 EOF
 ```
 
@@ -78,53 +76,56 @@ curl http://localhost:6379/health 2>/dev/null || echo "FalkorDB running on port 
 uv run python -c "from mcp.server.fastmcp import FastMCP; print('✓ MCP ready')"
 ```
 
-### 6. Test with MCP Inspector
+### 6. Test with MCP Dev Inspector (Optional)
+
+For interactive testing with a web UI:
 
 ```bash
-# Start MCP Inspector (interactive web UI)
+# Start MCP dev inspector (requires MCP CLI)
 uv run mcp dev server.py
 ```
 
-Opens URL like:
-
-```text
-http://localhost:6274/?MCP_PROXY_AUTH_TOKEN=...
-```
+Opens URL like: `http://localhost:5173`
 
 Features:
 
-- ✅ Available tools listed in sidebar
+- ✅ Available tools listed with schemas
 - ✅ Test each tool interactively with JSON input
 - ✅ Real-time request/response viewing
 - ✅ Server logs and debugging
-- ✅ No extra dependencies needed
+
+**Note:** If you just want to run the server for Claude Code integration, use `uv run python server.py` instead.
 
 ## Usage
 
-### Option A: MCP Inspector (Development)
+### Option A: Direct Python (Recommended)
 
-Best way to test and debug:
+Simplest way to run the server:
 
 ```bash
 cd /path/to/w3-mcp-server-falkordb
 
-# Start inspector
+# Run server (stdio mode)
+uv run python server.py
+```
+
+### Option B: MCP Dev Inspector (Development)
+
+Best way to test and debug interactively:
+
+```bash
+cd /path/to/w3-mcp-server-falkordb
+
+# Start MCP dev inspector (requires MCP CLI)
 uv run mcp dev server.py
 ```
 
 Opens web UI at `http://localhost:5173`:
 
-- See available tools
+- See available tools and schemas
 - Test each tool with JSON input
 - View request/response in real-time
 - See server logs
-
-### Option B: Direct Python
-
-```bash
-# Run server (stdio mode)
-uv run python server.py
-```
 
 ### Option C: Claude Code Integration
 
@@ -146,8 +147,7 @@ Edit `~/.claude/claude_config.json`:
       "command": "uv",
       "args": ["run", "--with", "w3-mcp-server-falkordb", "w3-mcp-server-falkordb"],
       "env": {
-        "FALKORDB_URL": "http://localhost:6379",
-        "FALKORDB_GRAPH": "default",
+        "FALKORDB_URL": "redis://localhost:6379",
         "FALKORDB_PASSWORD": ""
       }
     }
@@ -168,8 +168,7 @@ Edit `~/.claude/claude_config.json`:
       "args": ["run", "server.py"],
       "cwd": "/path/to/w3-mcp-server-falkordb",
       "env": {
-        "FALKORDB_URL": "http://localhost:6379",
-        "FALKORDB_GRAPH": "default",
+        "FALKORDB_URL": "redis://localhost:6379",
         "FALKORDB_PASSWORD": ""
       }
     }
@@ -181,16 +180,24 @@ Then restart Claude Code.
 
 ## Tools Documentation
 
+### Tool Behavior & Safety
+
+| Tool | Read-Only | Idempotent | Safe |
+| --- | --- | --- | --- |
+| **falkordb_query** | ❌ No (supports writes) | ❌ No | ⚠️ Use params for safety |
+| **falkordb_get_nodes** | ✅ Yes (read-only) | ✅ Yes | ✅ Safe |
+| **falkordb_list_graphs** | ✅ Yes (read-only) | ✅ Yes | ✅ Safe |
+
 ### falkordb_query
 
-Execute a Cypher query against FalkorDB.
+Execute a Cypher query against FalkorDB with optional parameterization.
 
 **Parameters:**
 
 - `query` (string, required): Cypher query to execute
-- `graph` (string): Graph name (default: from FALKORDB_GRAPH env)
-- `params` (object, optional): Query parameters/variables for safe parameterized queries
-- `response_format` (string): "markdown" or "json" (default: "markdown")
+- `graph` (string, required): Graph name to query
+- `params` (object, optional): Query parameters/variables ($name, $value, etc.)
+- `response_format` (string): "json", "markdown", or "raw" (default: "json")
 
 **Examples:**
 
@@ -211,38 +218,57 @@ Execute a Cypher query against FalkorDB.
 }
 ```
 
-**Output:**
-
-Returns query results formatted as Markdown or JSON:
+**Output (Markdown):**
 
 ```markdown
 ## Query Results
 
 Graph: `default`
+Status: ✓ Success
 
-Found 3 result(s):
+### Results — 2 row(s)
 
-### Result 1
-- **name**: Alice
-- **age**: 30
+Columns: `name, age`
 
-### Result 2
-- **name**: Bob
-- **age**: 25
+**Row 1:**
+- **name:** `Alice`
+- **age:** `30`
+
+**Row 2:**
+- **name:** `Bob`
+- **age:** `25`
+```
+
+**Output (JSON):**
+
+```json
+{
+  "success": true,
+  "data": {
+    "columns": ["name", "age"],
+    "rows": [
+      {"name": "Alice", "age": 30},
+      {"name": "Bob", "age": 25}
+    ],
+    "count": 2,
+    "stats": ["took 1.5 ms"]
+  },
+  "graph": "default"
+}
 ```
 
 ---
 
 ### falkordb_get_nodes
 
-Get node information from a graph.
+Get node information from a graph with optional label filtering.
 
 **Parameters:**
 
-- `graph` (string): Graph name (default: from FALKORDB_GRAPH env)
+- `graph` (string, required): Graph name to query
 - `label` (string, optional): Node label to filter by (e.g., "Person", "Company")
 - `limit` (integer, 1-1000): Max nodes to return (default: 10)
-- `response_format` (string): "markdown" or "json" (default: "markdown")
+- `response_format` (string): "json" or "markdown" (default: "json")
 
 **Examples:**
 
@@ -255,30 +281,49 @@ Get node information from a graph.
 }
 ```
 
-**Output:**
+**Output (Markdown):**
 
 ```markdown
 ## Nodes in Graph 'default'
 
-Label: `Person`
+🏷️  Label Filter: `Person`
+📊 Limit: 5
 
-Found 5 node(s):
+✓ Found 5 node(s):
 
 ### Node 1
-- **id**: 1
-- **name**: Alice
-- **email**: alice@example.com
+- **id:** `1`
+- **name:** `Alice`
+- **email:** `alice@example.com`
+```
+
+**Output (JSON):**
+
+```json
+{
+  "success": true,
+  "data": {
+    "columns": ["n"],
+    "rows": [
+      {"n": {"id": 1, "name": "Alice", "email": "alice@example.com"}},
+      {"n": {"id": 2, "name": "Bob", "email": "bob@example.com"}}
+    ],
+    "count": 2,
+    "stats": []
+  },
+  "graph": "default"
+}
 ```
 
 ---
 
 ### falkordb_list_graphs
 
-List all available graphs in FalkorDB.
+List all available graphs in FalkorDB instance.
 
 **Parameters:**
 
-- `response_format` (string): "markdown" or "json" (default: "markdown")
+- `response_format` (string): "json" or "markdown" (default: "json")
 
 **Example:**
 
@@ -288,44 +333,63 @@ List all available graphs in FalkorDB.
 }
 ```
 
-**Output:**
+**Output (JSON):**
 
 ```json
 {
+  "url": "redis://localhost:6379",
   "status": "connected",
-  "default_graph": "default",
-  "result": {}
+  "graphs": [
+    {"name": "default", "status": "accessible"},
+    {"name": "myapp", "status": "accessible"}
+  ],
+  "total_count": 2
 }
+```
+
+**Output (Markdown):**
+
+```markdown
+## FalkorDB Graphs
+
+🔗 Server: `redis://localhost:6379`
+✓ Status: Connected
+📊 Total Graphs: 2
+
+### Available Graphs
+
+1. **default** - ✓ accessible
+2. **myapp** - ✓ accessible
 ```
 
 ## Configuration
 
 ### FALKORDB_URL
 
-Specifies the URL of your FalkorDB server.
+Specifies the connection URL for your FalkorDB server (supports http://, https://, and redis:// schemes).
 
-**Default:** `http://localhost:6379`
+**Default:** `redis://localhost:6379`
 
 **Set via:**
 
 1. **Environment variable:**
 
    ```bash
-   export FALKORDB_URL=http://localhost:6379
+   export FALKORDB_URL=redis://localhost:6379
    uv run python server.py
    ```
 
 2. **.env file:**
 
    ```bash
-   FALKORDB_URL=http://localhost:6379
+   FALKORDB_URL=redis://localhost:6379
    ```
 
 3. **In claude_config.json:**
 
    ```json
    "env": {
-     "FALKORDB_URL": "http://localhost:6379"
+     "FALKORDB_URL": "redis://localhost:6379"
    }
    ```
 
@@ -334,12 +398,6 @@ Specifies the URL of your FalkorDB server.
 Optional authentication password for FalkorDB.
 
 **Default:** Empty (no authentication)
-
-### FALKORDB_GRAPH
-
-Default graph name to use when not specified in queries.
-
-**Default:** `default`
 
 ## Project Structure
 
@@ -425,18 +483,20 @@ black server.py
 ruff check server.py
 ```
 
-### Testing with MCP Inspector
+### Interactive Testing
+
+For development and debugging, use MCP dev inspector:
 
 ```bash
 uv run mcp dev server.py
 ```
 
-Web UI at `http://localhost:5173` shows:
+Web UI at `http://localhost:5173` provides:
 
-- Available tools and schemas
-- Real-time request/response
-- Server logs
-- Interactive testing
+- Tool definitions and JSON schemas
+- Interactive tool testing
+- Real-time request/response logs
+- Server output and errors
 
 ## Performance Tips
 
@@ -451,7 +511,10 @@ Web UI at `http://localhost:5173` shows:
 
 ```bash
 # Check if FalkorDB is running
-curl http://localhost:6379/health
+redis-cli ping
+
+# Or test with curl (if HTTP endpoint available)
+curl http://localhost:6379/
 
 # Start FalkorDB with Docker
 docker run -p 6379:6379 falkordb/falkordb:latest
@@ -465,25 +528,27 @@ docker run -p 6379:6379 falkordb/falkordb:latest
 
 ### Graph not found
 
-- Ensure graph exists in FalkorDB
-- Check FALKORDB_GRAPH environment variable
-- Create graph through FalkorDB CLI or external tools
+- Ensure the graph exists in FalkorDB
+- Verify you are specifying the correct `graph` parameter in your query
+- Create graph through FalkorDB CLI or external tools if it doesn't exist
 
-### MCP module not found
+### Module import errors
 
 ```bash
-# Install dependencies
+# Clean reinstall
+rm -rf .venv uv.lock
 uv sync
 
-# Or manually
-pip install mcp pydantic aiohttp
+# Verify installation
+uv run python -c "from mcp.server.fastmcp import FastMCP; print('✓ MCP installed')"
 ```
 
 ### Server hangs on startup
 
-- Check if FalkorDB server is running and accessible
-- Verify FALKORDB_URL is correct
-- Try: `curl http://localhost:6379/health`
+- Check if FalkorDB server is running: `redis-cli ping`
+- Verify FALKORDB_URL is correct (supports redis://, http://, https://)
+- Try: `redis-cli -p 6379 ping`
+- Check firewall/network connectivity to the FalkorDB server
 
 ## Cypher Query Examples
 
@@ -522,12 +587,12 @@ GROUP BY p.name, c.name
 
 ## Future Enhancements
 
-- [ ] Support for batch operations
-- [ ] Graph creation/deletion tools
-- [ ] Node/relationship creation and update tools
-- [ ] Relationship traversal utilities
-- [ ] Graph statistics and metadata tools
-- [ ] Transaction support
+- [ ] Node/Relationship creation tools
+- [ ] Node/Relationship update and delete tools
+- [ ] Batch operation support
+- [ ] Graph creation/deletion utilities
+- [ ] Transaction and rollback support
+- [ ] Query performance metrics and analysis
 
 ## References
 
